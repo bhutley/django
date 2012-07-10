@@ -8,6 +8,8 @@ import shutil
 import smtpd
 import sys
 from StringIO import StringIO
+from smtplib import SMTPException
+from ssl import SSLError
 import tempfile
 import threading
 
@@ -685,3 +687,51 @@ class SMTPBackendTests(BaseEmailBackendTests, TestCase):
         backend = smtp.EmailBackend(username='', password='')
         self.assertEqual(backend.username, '')
         self.assertEqual(backend.password, '')
+
+    @override_settings(EMAIL_USE_TLS=True)
+    def test_email_tls_use_settings(self):
+        backend = smtp.EmailBackend()
+        self.assertTrue(backend.use_tls)
+
+    @override_settings(EMAIL_USE_TLS=True)
+    def test_email_tls_override_settings(self):
+        backend = smtp.EmailBackend(use_tls=False)
+        self.assertFalse(backend.use_tls)
+
+    def test_email_tls_default_disabled(self):
+        backend = smtp.EmailBackend()
+        self.assertFalse(backend.use_tls)
+
+    @override_settings(EMAIL_USE_SSL=True)
+    def test_email_ssl_use_settings(self):
+        backend = smtp.EmailBackend()
+        self.assertTrue(backend.use_ssl)
+
+    @override_settings(EMAIL_USE_SSL=True)
+    def test_email_ssl_override_settings(self):
+        backend = smtp.EmailBackend(use_ssl=False)
+        self.assertFalse(backend.use_ssl)
+
+    def test_email_ssl_default_disabled(self):
+        backend = smtp.EmailBackend()
+        self.assertFalse(backend.use_ssl)
+
+    @override_settings(EMAIL_USE_TLS=True)
+    def test_email_tls_attempts_starttls(self):
+        backend = smtp.EmailBackend()
+        self.assertTrue(backend.use_tls)
+        try:
+            backend.open()
+            self.fail('SMTPException STARTTLS not raised.')
+        except SMTPException, e:
+            self.assertNotEqual(-1, str(e).find('STARTTLS'), "SMTPException wasn't for STARTTLS")
+
+    @override_settings(EMAIL_USE_SSL=True)
+    def test_email_ssl_attempts_ssl_connection(self):
+        backend = smtp.EmailBackend()
+        self.assertTrue(backend.use_ssl)
+        try:
+            backend.open()
+            self.fail('SSLError not raised.')
+        except SSLError, e:
+            pass
