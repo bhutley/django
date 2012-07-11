@@ -1,0 +1,177 @@
+Index: docs/topics/email.txt
+===================================================================
+--- docs/topics/email.txt	(revision 17323)
++++ docs/topics/email.txt	(working copy)
+@@ -27,7 +27,8 @@
+ :setting:`EMAIL_HOST` and :setting:`EMAIL_PORT` settings. The
+ :setting:`EMAIL_HOST_USER` and :setting:`EMAIL_HOST_PASSWORD` settings, if
+ set, are used to authenticate to the SMTP server, and the
+-:setting:`EMAIL_USE_TLS` setting controls whether a secure connection is used.
++:setting:`EMAIL_USE_TLS` and :setting:`EMAIL_USE_SSL` settings control whether
++a secure connection is used.
+ 
+ .. note::
+ 
+@@ -415,8 +416,8 @@
+ This is the default backend. Email will be sent through a SMTP server.
+ The server address and authentication credentials are set in the
+ :setting:`EMAIL_HOST`, :setting:`EMAIL_PORT`, :setting:`EMAIL_HOST_USER`,
+-:setting:`EMAIL_HOST_PASSWORD` and :setting:`EMAIL_USE_TLS` settings in your
+-settings file.
++:setting:`EMAIL_HOST_PASSWORD`, :setting:`EMAIL_USE_TLS` and
++:setting:`EMAIL_USE_SSL` settings in your settings file.
+ 
+ The SMTP backend is the default configuration inherited by Django. If you
+ want to specify it explicitly, put the following in your settings::
+Index: docs/ref/settings.txt
+===================================================================
+--- docs/ref/settings.txt	(revision 17323)
++++ docs/ref/settings.txt	(working copy)
+@@ -976,7 +976,22 @@
+ Default: ``False``
+ 
+ Whether to use a TLS (secure) connection when talking to the SMTP server.
++This is used for explicit TLS connections, generally on port 587. If you are
++experiencing hanging connections, see the implicit TLS setting
++:setting:`EMAIL_USE_SSL`.
+ 
++.. setting:: EMAIL_USE_SSL
++
++EMAIL_USE_SSL
++-------------
++
++Default: ``False``
++
++Whether to use an implicit TLS (secure) connection when talking to the SMTP
++server. In most email documentation this type of TLS connection is referred
++to as SSL. It is generally used on port 465. If you are experiencing problems,
++see the explicit TLS setting :setting:`EMAIL_USE_TLS`. 
++
+ .. setting:: FILE_CHARSET
+ 
+ FILE_CHARSET
+Index: tests/regressiontests/mail/tests.py
+===================================================================
+--- tests/regressiontests/mail/tests.py	(revision 17323)
++++ tests/regressiontests/mail/tests.py	(working copy)
+@@ -6,6 +6,8 @@
+ import smtpd
+ import sys
+ from StringIO import StringIO
++from smtplib import SMTPException
++from ssl import SSLError
+ import tempfile
+ import threading
+ 
+@@ -674,3 +676,51 @@
+         backend = smtp.EmailBackend(username='', password='')
+         self.assertEqual(backend.username, '')
+         self.assertEqual(backend.password, '')
++
++    @override_settings(EMAIL_USE_TLS=True)
++    def test_email_tls_use_settings(self):
++        backend = smtp.EmailBackend()
++        self.assertTrue(backend.use_tls)
++
++    @override_settings(EMAIL_USE_TLS=True)
++    def test_email_tls_override_settings(self):
++        backend = smtp.EmailBackend(use_tls=False)
++        self.assertFalse(backend.use_tls)
++
++    def test_email_tls_default_disabled(self):
++        backend = smtp.EmailBackend()
++        self.assertFalse(backend.use_tls)
++
++    @override_settings(EMAIL_USE_SSL=True)
++    def test_email_ssl_use_settings(self):
++        backend = smtp.EmailBackend()
++        self.assertTrue(backend.use_ssl)
++
++    @override_settings(EMAIL_USE_SSL=True)
++    def test_email_ssl_override_settings(self):
++        backend = smtp.EmailBackend(use_ssl=False)
++        self.assertFalse(backend.use_ssl)
++
++    def test_email_ssl_default_disabled(self):
++        backend = smtp.EmailBackend()
++        self.assertFalse(backend.use_ssl)
++
++    @override_settings(EMAIL_USE_TLS=True)
++    def test_email_tls_attempts_starttls(self):
++        backend = smtp.EmailBackend()
++        self.assertTrue(backend.use_tls)
++        try:
++            backend.open()
++            self.fail('SMTPException STARTTLS not raised.')
++        except SMTPException, e:
++            self.assertNotEqual(-1, str(e).find('STARTTLS'), "SMTPException wasn't for STARTTLS")
++
++    @override_settings(EMAIL_USE_SSL=True)
++    def test_email_ssl_attempts_ssl_connection(self):
++        backend = smtp.EmailBackend()
++        self.assertTrue(backend.use_ssl)
++        try:
++            backend.open()
++            self.fail('SSLError not raised.')
++        except SSLError, e:
++            pass
+Index: django/conf/global_settings.py
+===================================================================
+--- django/conf/global_settings.py	(revision 17323)
++++ django/conf/global_settings.py	(working copy)
+@@ -171,6 +171,7 @@
+ EMAIL_HOST_USER = ''
+ EMAIL_HOST_PASSWORD = ''
+ EMAIL_USE_TLS = False
++EMAIL_USE_SSL = False
+ 
+ # List of strings representing installed apps.
+ INSTALLED_APPS = ()
+Index: django/core/mail/backends/smtp.py
+===================================================================
+--- django/core/mail/backends/smtp.py	(revision 17323)
++++ django/core/mail/backends/smtp.py	(working copy)
+@@ -14,7 +14,7 @@
+     A wrapper that manages the SMTP network connection.
+     """
+     def __init__(self, host=None, port=None, username=None, password=None,
+-                 use_tls=None, fail_silently=False, **kwargs):
++                 use_tls=None, fail_silently=False, use_ssl=None, **kwargs):
+         super(EmailBackend, self).__init__(fail_silently=fail_silently)
+         self.host = host or settings.EMAIL_HOST
+         self.port = port or settings.EMAIL_PORT
+@@ -30,6 +30,10 @@
+             self.use_tls = settings.EMAIL_USE_TLS
+         else:
+             self.use_tls = use_tls
++        if use_ssl is None:
++            self.use_ssl = settings.EMAIL_USE_SSL
++        else:
++            self.use_ssl = use_ssl
+         self.connection = None
+         self._lock = threading.RLock()
+ 
+@@ -44,12 +48,18 @@
+         try:
+             # If local_hostname is not specified, socket.getfqdn() gets used.
+             # For performance, we use the cached FQDN for local_hostname.
+-            self.connection = smtplib.SMTP(self.host, self.port,
++            if self.use_ssl:
++                self.connection = smtplib.SMTP_SSL(self.host, self.port,
+                                            local_hostname=DNS_NAME.get_fqdn())
+-            if self.use_tls:
+-                self.connection.ehlo()
+-                self.connection.starttls()
+-                self.connection.ehlo()
++            else:
++                self.connection = smtplib.SMTP(self.host, self.port,
++                                           local_hostname=DNS_NAME.get_fqdn())
++                # TLS/SSL are mutually exclusive, so only attempt TLS over
++                # non-secure connections.
++                if self.use_tls:
++                    self.connection.ehlo()
++                    self.connection.starttls()
++                    self.connection.ehlo()
+             if self.username and self.password:
+                 self.connection.login(self.username, self.password)
+             return True

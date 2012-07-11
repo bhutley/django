@@ -5,6 +5,8 @@ import shutil
 import sys
 import tempfile
 from StringIO import StringIO
+from smtplib import SMTPException
+from ssl import SSLError
 from django.conf import settings
 from django.core import mail
 from django.core.mail import EmailMessage, mail_admins, mail_managers, EmailMultiAlternatives
